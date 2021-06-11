@@ -229,7 +229,7 @@ impl<T, I: TypedId> Storage<T, I> {
 /// If type A implements `Access<B>`, that means we are allowed to proceed
 /// with locking resource `B` after we lock `A`.
 ///
-/// The implenentations basically describe the edges in a directed graph
+/// The implementations basically describe the edges in a directed graph
 /// of lock transitions. As long as it doesn't have loops, we can have
 /// multiple concurrent paths on this graph (from multiple threads) without
 /// deadlocks, i.e. there is always a path whose next resource is not locked
@@ -251,6 +251,7 @@ impl<B: hal::Backend> Access<SwapChain<B>> for Device<B> {}
 impl<B: hal::Backend> Access<PipelineLayout<B>> for Root {}
 impl<B: hal::Backend> Access<PipelineLayout<B>> for Device<B> {}
 impl<B: hal::Backend> Access<PipelineLayout<B>> for RenderBundle {}
+impl<B: hal::Backend> Access<PipelineLayout<B>> for ShaderModule<B> {}
 impl<B: hal::Backend> Access<BindGroupLayout<B>> for Root {}
 impl<B: hal::Backend> Access<BindGroupLayout<B>> for Device<B> {}
 impl<B: hal::Backend> Access<BindGroupLayout<B>> for PipelineLayout<B> {}
@@ -274,8 +275,8 @@ impl<B: hal::Backend> Access<QuerySet<B>> for Device<B> {}
 impl<B: hal::Backend> Access<QuerySet<B>> for CommandBuffer<B> {}
 impl<B: hal::Backend> Access<QuerySet<B>> for RenderPipeline<B> {}
 impl<B: hal::Backend> Access<QuerySet<B>> for ComputePipeline<B> {}
+impl<B: hal::Backend> Access<ShaderModule<B>> for Root {}
 impl<B: hal::Backend> Access<ShaderModule<B>> for Device<B> {}
-impl<B: hal::Backend> Access<ShaderModule<B>> for BindGroupLayout<B> {}
 impl<B: hal::Backend> Access<Buffer<B>> for Root {}
 impl<B: hal::Backend> Access<Buffer<B>> for Device<B> {}
 impl<B: hal::Backend> Access<Buffer<B>> for BindGroupLayout<B> {}

@@ -1975,8 +1975,9 @@ impl<B: GfxBackend> Device<B> {
         token: &mut Token<Self>,
     ) -> Result<pipeline::ComputePipeline<B>, pipeline::CreateComputePipelineError> {
         //TODO: only lock mutable if the layout is derived
-        let (mut pipeline_layout_guard, mut token) = hub.pipeline_layouts.write(token);
-        let (mut bgl_guard, mut token) = hub.bind_group_layouts.write(&mut token);
+        let (shader_module_guard, mut token) = hub.shader_modules.read(token);
+        let (mut pipeline_layout_guard, mut token) = hub.pipeline_layouts.write(&mut token);
+        let (mut bgl_guard, _) = hub.bind_group_layouts.write(&mut token);
 
         // This has to be done first, or otherwise the IDs may be pointing to entries
         // that are not even in the storage.
@@ -1999,7 +2000,6 @@ impl<B: GfxBackend> Device<B> {
             ArrayVec::<[binding_model::BindEntryMap; MAX_BIND_GROUPS]>::new();
 
         let io = validation::StageIo::default();
-        let (shader_module_guard, _) = hub.shader_modules.read(&mut token);
 
         let entry_point_name = &desc.stage.entry_point;
         let shader_module = shader_module_guard
@@ -2105,246 +2105,287 @@ impl<B: GfxBackend> Device<B> {
         hub: &Hub<B, G>,
         token: &mut Token<Self>,
     ) -> Result<pipeline::RenderPipeline<B>, pipeline::CreateRenderPipelineError> {
-        //TODO: only lock mutable if the layout is derived
-        let (mut pipeline_layout_guard, mut token) = hub.pipeline_layouts.write(token);
-        let (mut bgl_guard, mut token) = hub.bind_group_layouts.write(&mut token);
+        let (shader_module_guard, mut token) = hub.shader_modules.read(token);
 
-        // This has to be done first, or otherwise the IDs may be pointing to entries
-        // that are not even in the storage.
-        if let Some(ref ids) = implicit_context {
-            pipeline_layout_guard.insert_error(ids.root_id, IMPLICIT_FAILURE);
-            for &bgl_id in ids.group_ids.iter() {
-                bgl_guard.insert_error(bgl_id, IMPLICIT_FAILURE);
-            }
-        }
+        let (
+            pipeline_layout_id,
+            vertex_buffers,
+            attributes,
+            input_assembler,
+            vertex,
+            rp_key,
+            rasterizer,
+            fragment,
+            blender,
+            depth_stencil,
+            multisampling,
+            baked_states,
+            color_states,
+            depth_stencil_state,
+            samples,
+            vertex_strides,
+        ) = {
+            profiling::scope!("prep", "create_render_pipeline");
+            //TODO: only lock mutable if the layout is derived
+            let (mut pipeline_layout_guard, mut token) = hub.pipeline_layouts.write(&mut token);
+            let (mut bgl_guard, _) = hub.bind_group_layouts.write(&mut token);
 
-        let mut derived_group_layouts =
-            ArrayVec::<[binding_model::BindEntryMap; MAX_BIND_GROUPS]>::new();
-
-        let color_states = desc
-            .fragment
-            .as_ref()
-            .map_or(&[][..], |fragment| &fragment.targets);
-        let depth_stencil_state = desc.depth_stencil.as_ref();
-        let rasterizer =
-            conv::map_primitive_state_to_rasterizer(&desc.primitive, depth_stencil_state);
-
-        let mut io = validation::StageIo::default();
-        let mut validated_stages = wgt::ShaderStage::empty();
-
-        let desc_vbs = &desc.vertex.buffers;
-        let mut vertex_strides = Vec::with_capacity(desc_vbs.len());
-        let mut vertex_buffers = Vec::with_capacity(desc_vbs.len());
-        let mut attributes = Vec::new();
-        for (i, vb_state) in desc_vbs.iter().enumerate() {
-            vertex_strides
-                .alloc()
-                .init((vb_state.array_stride, vb_state.step_mode));
-            if vb_state.attributes.is_empty() {
-                continue;
-            }
-            if vb_state.array_stride > self.limits.max_vertex_buffer_array_stride as u64 {
-                return Err(pipeline::CreateRenderPipelineError::VertexStrideTooLarge {
-                    index: i as u32,
-                    given: vb_state.array_stride as u32,
-                    limit: self.limits.max_vertex_buffer_array_stride,
-                });
-            }
-            if vb_state.array_stride % wgt::VERTEX_STRIDE_ALIGNMENT != 0 {
-                return Err(pipeline::CreateRenderPipelineError::UnalignedVertexStride {
-                    index: i as u32,
-                    stride: vb_state.array_stride,
-                });
-            }
-            vertex_buffers.alloc().init(hal::pso::VertexBufferDesc {
-                binding: i as u32,
-                stride: vb_state.array_stride as u32,
-                rate: match vb_state.step_mode {
-                    InputStepMode::Vertex => hal::pso::VertexInputRate::Vertex,
-                    InputStepMode::Instance => hal::pso::VertexInputRate::Instance(1),
-                },
-            });
-            let desc_atts = &vb_state.attributes;
-            for attribute in desc_atts.iter() {
-                if attribute.offset >= 0x10000000 {
-                    return Err(
-                        pipeline::CreateRenderPipelineError::InvalidVertexAttributeOffset {
-                            location: attribute.shader_location,
-                            offset: attribute.offset,
-                        },
-                    );
+            // This has to be done first, or otherwise the IDs may be pointing to entries
+            // that are not even in the storage.
+            if let Some(ref ids) = implicit_context {
+                pipeline_layout_guard.insert_error(ids.root_id, IMPLICIT_FAILURE);
+                for &bgl_id in ids.group_ids.iter() {
+                    bgl_guard.insert_error(bgl_id, IMPLICIT_FAILURE);
                 }
+            }
 
-                if let wgt::VertexFormat::Float64
-                | wgt::VertexFormat::Float64x2
-                | wgt::VertexFormat::Float64x3
-                | wgt::VertexFormat::Float64x4 = attribute.format
-                {
-                    self.require_features(wgt::Features::VERTEX_ATTRIBUTE_64BIT)?;
+            let mut derived_group_layouts =
+                ArrayVec::<[binding_model::BindEntryMap; MAX_BIND_GROUPS]>::new();
+
+            let color_states = desc
+                .fragment
+                .as_ref()
+                .map_or(&[][..], |fragment| &fragment.targets);
+            let depth_stencil_state = desc.depth_stencil.as_ref();
+            let rasterizer =
+                conv::map_primitive_state_to_rasterizer(&desc.primitive, depth_stencil_state);
+
+            let mut io = validation::StageIo::default();
+            let mut validated_stages = wgt::ShaderStage::empty();
+
+            let desc_vbs = &desc.vertex.buffers;
+            let mut vertex_strides = Vec::with_capacity(desc_vbs.len());
+            let mut vertex_buffers = Vec::with_capacity(desc_vbs.len());
+            let mut attributes = Vec::new();
+            for (i, vb_state) in desc_vbs.iter().enumerate() {
+                vertex_strides
+                    .alloc()
+                    .init((vb_state.array_stride, vb_state.step_mode));
+                if vb_state.attributes.is_empty() {
+                    continue;
                 }
-
-                attributes.alloc().init(hal::pso::AttributeDesc {
-                    location: attribute.shader_location,
+                if vb_state.array_stride > self.limits.max_vertex_buffer_array_stride as u64 {
+                    return Err(pipeline::CreateRenderPipelineError::VertexStrideTooLarge {
+                        index: i as u32,
+                        given: vb_state.array_stride as u32,
+                        limit: self.limits.max_vertex_buffer_array_stride,
+                    });
+                }
+                if vb_state.array_stride % wgt::VERTEX_STRIDE_ALIGNMENT != 0 {
+                    return Err(pipeline::CreateRenderPipelineError::UnalignedVertexStride {
+                        index: i as u32,
+                        stride: vb_state.array_stride,
+                    });
+                }
+                vertex_buffers.alloc().init(hal::pso::VertexBufferDesc {
                     binding: i as u32,
-                    element: hal::pso::Element {
-                        format: conv::map_vertex_format(attribute.format),
-                        offset: attribute.offset as u32,
+                    stride: vb_state.array_stride as u32,
+                    rate: match vb_state.step_mode {
+                        InputStepMode::Vertex => hal::pso::VertexInputRate::Vertex,
+                        InputStepMode::Instance => hal::pso::VertexInputRate::Instance(1),
                     },
                 });
-                io.insert(
-                    attribute.shader_location,
-                    validation::InterfaceVar::vertex_attribute(attribute.format),
+                let desc_atts = &vb_state.attributes;
+                for attribute in desc_atts.iter() {
+                    if attribute.offset >= 0x10000000 {
+                        return Err(
+                            pipeline::CreateRenderPipelineError::InvalidVertexAttributeOffset {
+                                location: attribute.shader_location,
+                                offset: attribute.offset,
+                            },
+                        );
+                    }
+
+                    if let wgt::VertexFormat::Float64
+                    | wgt::VertexFormat::Float64x2
+                    | wgt::VertexFormat::Float64x3
+                    | wgt::VertexFormat::Float64x4 = attribute.format
+                    {
+                        self.require_features(wgt::Features::VERTEX_ATTRIBUTE_64BIT)?;
+                    }
+
+                    attributes.alloc().init(hal::pso::AttributeDesc {
+                        location: attribute.shader_location,
+                        binding: i as u32,
+                        element: hal::pso::Element {
+                            format: conv::map_vertex_format(attribute.format),
+                            offset: attribute.offset as u32,
+                        },
+                    });
+                    io.insert(
+                        attribute.shader_location,
+                        validation::InterfaceVar::vertex_attribute(attribute.format),
+                    );
+                }
+            }
+
+            if vertex_buffers.len() > self.limits.max_vertex_buffers as usize {
+                return Err(pipeline::CreateRenderPipelineError::TooManyVertexBuffers {
+                    given: vertex_buffers.len() as u32,
+                    limit: self.limits.max_vertex_buffers,
+                });
+            }
+            if attributes.len() > self.limits.max_vertex_attributes as usize {
+                return Err(
+                    pipeline::CreateRenderPipelineError::TooManyVertexAttributes {
+                        given: attributes.len() as u32,
+                        limit: self.limits.max_vertex_attributes,
+                    },
                 );
             }
-        }
 
-        if vertex_buffers.len() > self.limits.max_vertex_buffers as usize {
-            return Err(pipeline::CreateRenderPipelineError::TooManyVertexBuffers {
-                given: vertex_buffers.len() as u32,
-                limit: self.limits.max_vertex_buffers,
-            });
-        }
-        if attributes.len() > self.limits.max_vertex_attributes as usize {
-            return Err(
-                pipeline::CreateRenderPipelineError::TooManyVertexAttributes {
-                    given: attributes.len() as u32,
-                    limit: self.limits.max_vertex_attributes,
-                },
-            );
-        }
+            if desc.primitive.strip_index_format.is_some()
+                && desc.primitive.topology != wgt::PrimitiveTopology::LineStrip
+                && desc.primitive.topology != wgt::PrimitiveTopology::TriangleStrip
+            {
+                return Err(
+                    pipeline::CreateRenderPipelineError::StripIndexFormatForNonStripTopology {
+                        strip_index_format: desc.primitive.strip_index_format,
+                        topology: desc.primitive.topology,
+                    },
+                );
+            }
 
-        if desc.primitive.strip_index_format.is_some()
-            && desc.primitive.topology != wgt::PrimitiveTopology::LineStrip
-            && desc.primitive.topology != wgt::PrimitiveTopology::TriangleStrip
-        {
-            return Err(
-                pipeline::CreateRenderPipelineError::StripIndexFormatForNonStripTopology {
-                    strip_index_format: desc.primitive.strip_index_format,
-                    topology: desc.primitive.topology,
-                },
-            );
-        }
+            if desc.primitive.clamp_depth {
+                self.require_features(wgt::Features::DEPTH_CLAMPING)?;
+            }
+            if desc.primitive.polygon_mode != wgt::PolygonMode::Fill {
+                self.require_features(wgt::Features::NON_FILL_POLYGON_MODE)?;
+            }
 
-        if desc.primitive.clamp_depth {
-            self.require_features(wgt::Features::DEPTH_CLAMPING)?;
-        }
-        if desc.primitive.polygon_mode != wgt::PolygonMode::Fill {
-            self.require_features(wgt::Features::NON_FILL_POLYGON_MODE)?;
-        }
+            if desc.primitive.conservative {
+                self.require_features(wgt::Features::CONSERVATIVE_RASTERIZATION)?;
+            }
 
-        if desc.primitive.conservative {
-            self.require_features(wgt::Features::CONSERVATIVE_RASTERIZATION)?;
-        }
-
-        if desc.primitive.conservative && desc.primitive.polygon_mode != wgt::PolygonMode::Fill {
-            return Err(
+            if desc.primitive.conservative && desc.primitive.polygon_mode != wgt::PolygonMode::Fill
+            {
+                return Err(
                 pipeline::CreateRenderPipelineError::ConservativeRasterizationNonFillPolygonMode,
             );
-        }
+            }
 
-        let input_assembler = conv::map_primitive_state_to_input_assembler(&desc.primitive);
+            let input_assembler = conv::map_primitive_state_to_input_assembler(&desc.primitive);
 
-        let mut blender = hal::pso::BlendDesc {
-            logic_op: None,
-            targets: Vec::with_capacity(color_states.len()),
-        };
-        for (i, cs) in color_states.iter().enumerate() {
-            let error = loop {
-                let format_desc = cs.format.describe();
-                self.require_features(format_desc.required_features)?;
-                if !format_desc
-                    .guaranteed_format_features
-                    .allowed_usages
-                    .contains(wgt::TextureUsage::RENDER_ATTACHMENT)
-                {
-                    break Some(pipeline::ColorStateError::FormatNotRenderable(cs.format));
-                }
-                if cs.blend.is_some() && !format_desc.guaranteed_format_features.filterable {
-                    break Some(pipeline::ColorStateError::FormatNotBlendable(cs.format));
-                }
-                let hal_format = conv::map_texture_format(cs.format, self.private_features);
-                if !hal_format
-                    .surface_desc()
-                    .aspects
-                    .contains(hal::format::Aspects::COLOR)
-                {
-                    break Some(pipeline::ColorStateError::FormatNotColor(cs.format));
-                }
-
-                match conv::map_color_target_state(cs) {
-                    Ok(bt) => blender.targets.push(bt),
-                    Err(e) => break Some(e),
-                }
-                break None;
+            let mut blender = hal::pso::BlendDesc {
+                logic_op: None,
+                targets: Vec::with_capacity(color_states.len()),
             };
-            if let Some(e) = error {
-                return Err(pipeline::CreateRenderPipelineError::ColorState(i as u8, e));
-            }
-        }
+            for (i, cs) in color_states.iter().enumerate() {
+                let error = loop {
+                    let format_desc = cs.format.describe();
+                    self.require_features(format_desc.required_features)?;
+                    if !format_desc
+                        .guaranteed_format_features
+                        .allowed_usages
+                        .contains(wgt::TextureUsage::RENDER_ATTACHMENT)
+                    {
+                        break Some(pipeline::ColorStateError::FormatNotRenderable(cs.format));
+                    }
+                    if cs.blend.is_some() && !format_desc.guaranteed_format_features.filterable {
+                        break Some(pipeline::ColorStateError::FormatNotBlendable(cs.format));
+                    }
+                    let hal_format = conv::map_texture_format(cs.format, self.private_features);
+                    if !hal_format
+                        .surface_desc()
+                        .aspects
+                        .contains(hal::format::Aspects::COLOR)
+                    {
+                        break Some(pipeline::ColorStateError::FormatNotColor(cs.format));
+                    }
 
-        if let Some(ds) = depth_stencil_state {
-            let error = loop {
-                let format_desc = ds.format.describe();
-                self.require_features(format_desc.required_features)?;
-                if !format_desc
-                    .guaranteed_format_features
-                    .allowed_usages
-                    .contains(wgt::TextureUsage::RENDER_ATTACHMENT)
-                {
-                    break Some(pipeline::DepthStencilStateError::FormatNotRenderable(
-                        ds.format,
-                    ));
+                    match conv::map_color_target_state(cs) {
+                        Ok(bt) => blender.targets.push(bt),
+                        Err(e) => break Some(e),
+                    }
+                    break None;
+                };
+                if let Some(e) = error {
+                    return Err(pipeline::CreateRenderPipelineError::ColorState(i as u8, e));
                 }
-                let hal_format = conv::map_texture_format(ds.format, self.private_features);
-                let aspects = hal_format.surface_desc().aspects;
-                if ds.is_depth_enabled() && !aspects.contains(hal::format::Aspects::DEPTH) {
-                    break Some(pipeline::DepthStencilStateError::FormatNotDepth(ds.format));
+            }
+
+            if let Some(ds) = depth_stencil_state {
+                let error = loop {
+                    let format_desc = ds.format.describe();
+                    self.require_features(format_desc.required_features)?;
+                    if !format_desc
+                        .guaranteed_format_features
+                        .allowed_usages
+                        .contains(wgt::TextureUsage::RENDER_ATTACHMENT)
+                    {
+                        break Some(pipeline::DepthStencilStateError::FormatNotRenderable(
+                            ds.format,
+                        ));
+                    }
+                    let hal_format = conv::map_texture_format(ds.format, self.private_features);
+                    let aspects = hal_format.surface_desc().aspects;
+                    if ds.is_depth_enabled() && !aspects.contains(hal::format::Aspects::DEPTH) {
+                        break Some(pipeline::DepthStencilStateError::FormatNotDepth(ds.format));
+                    }
+                    if ds.stencil.is_enabled() && !aspects.contains(hal::format::Aspects::STENCIL) {
+                        break Some(pipeline::DepthStencilStateError::FormatNotStencil(
+                            ds.format,
+                        ));
+                    }
+                    break None;
+                };
+                if let Some(e) = error {
+                    return Err(pipeline::CreateRenderPipelineError::DepthStencilState(e));
                 }
-                if ds.stencil.is_enabled() && !aspects.contains(hal::format::Aspects::STENCIL) {
-                    break Some(pipeline::DepthStencilStateError::FormatNotStencil(
-                        ds.format,
-                    ));
-                }
-                break None;
+            }
+            let depth_stencil = depth_stencil_state
+                .map(conv::map_depth_stencil_state)
+                .unwrap_or_default();
+
+            let baked_states = hal::pso::BakedStates {
+                viewport: None,
+                scissor: None,
+                blend_constants: None,
+                depth_bounds: None,
             };
-            if let Some(e) = error {
-                return Err(pipeline::CreateRenderPipelineError::DepthStencilState(e));
+
+            if desc.layout.is_none() {
+                for _ in 0..self.limits.max_bind_groups {
+                    derived_group_layouts.push(binding_model::BindEntryMap::default());
+                }
             }
-        }
-        let depth_stencil = depth_stencil_state
-            .map(conv::map_depth_stencil_state)
-            .unwrap_or_default();
 
-        let baked_states = hal::pso::BakedStates {
-            viewport: None,
-            scissor: None,
-            blend_constants: None,
-            depth_bounds: None,
-        };
+            let samples = {
+                let sc = desc.multisample.count;
+                if sc == 0 || sc > 32 || !conv::is_power_of_two(sc) {
+                    return Err(pipeline::CreateRenderPipelineError::InvalidSampleCount(sc));
+                }
+                sc as u8
+            };
+            let multisampling = if samples == 1 {
+                None
+            } else {
+                Some(conv::map_multisample_state(&desc.multisample))
+            };
 
-        if desc.layout.is_none() {
-            for _ in 0..self.limits.max_bind_groups {
-                derived_group_layouts.push(binding_model::BindEntryMap::default());
-            }
-        }
-
-        let samples = {
-            let sc = desc.multisample.count;
-            if sc == 0 || sc > 32 || !conv::is_power_of_two(sc) {
-                return Err(pipeline::CreateRenderPipelineError::InvalidSampleCount(sc));
-            }
-            sc as u8
-        };
-        let multisampling = if samples == 1 {
-            None
-        } else {
-            Some(conv::map_multisample_state(&desc.multisample))
-        };
-
-        let rp_key = RenderPassKey {
-            colors: color_states
-                .iter()
-                .map(|state| {
+            let rp_key = RenderPassKey {
+                colors: color_states
+                    .iter()
+                    .map(|state| {
+                        let at = hal::pass::Attachment {
+                            format: Some(conv::map_texture_format(
+                                state.format,
+                                self.private_features,
+                            )),
+                            samples,
+                            ops: hal::pass::AttachmentOps::PRESERVE,
+                            stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+                            layouts: hal::image::Layout::General..hal::image::Layout::General,
+                        };
+                        (at, hal::image::Layout::ColorAttachmentOptimal)
+                    })
+                    .collect(),
+                // We can ignore the resolves as the vulkan specs says:
+                // As an additional special case, if two render passes have a single subpass,
+                // they are compatible even if they have different resolve attachment references
+                // or depth/stencil resolve modes but satisfy the other compatibility conditions.
+                resolves: ArrayVec::new(),
+                depth_stencil: depth_stencil_state.map(|state| {
                     let at = hal::pass::Attachment {
                         format: Some(conv::map_texture_format(
                             state.format,
@@ -2352,165 +2393,180 @@ impl<B: GfxBackend> Device<B> {
                         )),
                         samples,
                         ops: hal::pass::AttachmentOps::PRESERVE,
-                        stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+                        stencil_ops: hal::pass::AttachmentOps::PRESERVE,
                         layouts: hal::image::Layout::General..hal::image::Layout::General,
                     };
-                    (at, hal::image::Layout::ColorAttachmentOptimal)
-                })
-                .collect(),
-            // We can ignore the resolves as the vulkan specs says:
-            // As an additional special case, if two render passes have a single subpass,
-            // they are compatible even if they have different resolve attachment references
-            // or depth/stencil resolve modes but satisfy the other compatibility conditions.
-            resolves: ArrayVec::new(),
-            depth_stencil: depth_stencil_state.map(|state| {
-                let at = hal::pass::Attachment {
-                    format: Some(conv::map_texture_format(
-                        state.format,
-                        self.private_features,
-                    )),
-                    samples,
-                    ops: hal::pass::AttachmentOps::PRESERVE,
-                    stencil_ops: hal::pass::AttachmentOps::PRESERVE,
-                    layouts: hal::image::Layout::General..hal::image::Layout::General,
-                };
-                (at, hal::image::Layout::DepthStencilAttachmentOptimal)
-            }),
-        };
+                    (at, hal::image::Layout::DepthStencilAttachmentOptimal)
+                }),
+            };
 
-        let (shader_module_guard, _) = hub.shader_modules.read(&mut token);
+            let vertex = {
+                let stage = &desc.vertex.stage;
+                let flag = wgt::ShaderStage::VERTEX;
 
-        let vertex = {
-            let stage = &desc.vertex.stage;
-            let flag = wgt::ShaderStage::VERTEX;
-
-            let shader_module = shader_module_guard.get(stage.module).map_err(|_| {
-                pipeline::CreateRenderPipelineError::Stage {
-                    stage: flag,
-                    error: validation::StageError::InvalidModule,
-                }
-            })?;
-
-            if let Some(ref interface) = shader_module.interface {
-                let provided_layouts = match desc.layout {
-                    Some(pipeline_layout_id) => {
-                        let pipeline_layout = pipeline_layout_guard
-                            .get(pipeline_layout_id)
-                            .map_err(|_| pipeline::CreateRenderPipelineError::InvalidLayout)?;
-                        Some(Device::get_introspection_bind_group_layouts(
-                            pipeline_layout,
-                            &*bgl_guard,
-                        ))
-                    }
-                    None => None,
-                };
-
-                io = interface
-                    .check_stage(
-                        provided_layouts.as_ref().map(|p| p.as_slice()),
-                        &mut derived_group_layouts,
-                        &stage.entry_point,
-                        flag,
-                        io,
-                    )
-                    .map_err(|error| pipeline::CreateRenderPipelineError::Stage {
+                let shader_module = shader_module_guard.get(stage.module).map_err(|_| {
+                    pipeline::CreateRenderPipelineError::Stage {
                         stage: flag,
-                        error,
-                    })?;
-                validated_stages |= flag;
-            }
-
-            hal::pso::EntryPoint::<B> {
-                entry: &stage.entry_point,
-                module: &shader_module.raw,
-                specialization: hal::pso::Specialization::EMPTY,
-            }
-        };
-
-        let fragment = match desc.fragment {
-            Some(ref fragment) => {
-                let entry_point_name = &fragment.stage.entry_point;
-                let flag = wgt::ShaderStage::FRAGMENT;
-
-                let shader_module =
-                    shader_module_guard
-                        .get(fragment.stage.module)
-                        .map_err(|_| pipeline::CreateRenderPipelineError::Stage {
-                            stage: flag,
-                            error: validation::StageError::InvalidModule,
-                        })?;
-
-                let provided_layouts = match desc.layout {
-                    Some(pipeline_layout_id) => Some(Device::get_introspection_bind_group_layouts(
-                        pipeline_layout_guard
-                            .get(pipeline_layout_id)
-                            .map_err(|_| pipeline::CreateRenderPipelineError::InvalidLayout)?,
-                        &*bgl_guard,
-                    )),
-                    None => None,
-                };
-
-                if validated_stages == wgt::ShaderStage::VERTEX {
-                    if let Some(ref interface) = shader_module.interface {
-                        io = interface
-                            .check_stage(
-                                provided_layouts.as_ref().map(|p| p.as_slice()),
-                                &mut derived_group_layouts,
-                                &entry_point_name,
-                                flag,
-                                io,
-                            )
-                            .map_err(|error| pipeline::CreateRenderPipelineError::Stage {
-                                stage: flag,
-                                error,
-                            })?;
-                        validated_stages |= flag;
+                        error: validation::StageError::InvalidModule,
                     }
+                })?;
+
+                if let Some(ref interface) = shader_module.interface {
+                    let provided_layouts = match desc.layout {
+                        Some(pipeline_layout_id) => {
+                            let pipeline_layout = pipeline_layout_guard
+                                .get(pipeline_layout_id)
+                                .map_err(|_| pipeline::CreateRenderPipelineError::InvalidLayout)?;
+                            Some(Device::get_introspection_bind_group_layouts(
+                                pipeline_layout,
+                                &*bgl_guard,
+                            ))
+                        }
+                        None => None,
+                    };
+
+                    io = interface
+                        .check_stage(
+                            provided_layouts.as_ref().map(|p| p.as_slice()),
+                            &mut derived_group_layouts,
+                            &stage.entry_point,
+                            flag,
+                            io,
+                        )
+                        .map_err(|error| pipeline::CreateRenderPipelineError::Stage {
+                            stage: flag,
+                            error,
+                        })?;
+                    validated_stages |= flag;
                 }
 
-                Some(hal::pso::EntryPoint::<B> {
-                    entry: &entry_point_name,
+                hal::pso::EntryPoint::<B> {
+                    entry: &stage.entry_point,
                     module: &shader_module.raw,
                     specialization: hal::pso::Specialization::EMPTY,
-                })
-            }
-            None => None,
-        };
+                }
+            };
 
-        if validated_stages.contains(wgt::ShaderStage::FRAGMENT) {
-            for (i, state) in color_states.iter().enumerate() {
-                match io.get(&(i as wgt::ShaderLocation)) {
-                    Some(ref output) => {
-                        validation::check_texture_format(state.format, &output.ty).map_err(
-                            |pipeline| {
-                                pipeline::CreateRenderPipelineError::ColorState(
-                                    i as u8,
-                                    pipeline::ColorStateError::IncompatibleFormat {
-                                        pipeline,
-                                        shader: output.ty,
-                                    },
+            let fragment = match desc.fragment {
+                Some(ref fragment) => {
+                    let entry_point_name = &fragment.stage.entry_point;
+                    let flag = wgt::ShaderStage::FRAGMENT;
+
+                    let shader_module =
+                        shader_module_guard
+                            .get(fragment.stage.module)
+                            .map_err(|_| pipeline::CreateRenderPipelineError::Stage {
+                                stage: flag,
+                                error: validation::StageError::InvalidModule,
+                            })?;
+
+                    let provided_layouts = match desc.layout {
+                        Some(pipeline_layout_id) => {
+                            Some(Device::get_introspection_bind_group_layouts(
+                                pipeline_layout_guard.get(pipeline_layout_id).map_err(|_| {
+                                    pipeline::CreateRenderPipelineError::InvalidLayout
+                                })?,
+                                &*bgl_guard,
+                            ))
+                        }
+                        None => None,
+                    };
+
+                    if validated_stages == wgt::ShaderStage::VERTEX {
+                        if let Some(ref interface) = shader_module.interface {
+                            io = interface
+                                .check_stage(
+                                    provided_layouts.as_ref().map(|p| p.as_slice()),
+                                    &mut derived_group_layouts,
+                                    &entry_point_name,
+                                    flag,
+                                    io,
                                 )
-                            },
-                        )?;
+                                .map_err(|error| pipeline::CreateRenderPipelineError::Stage {
+                                    stage: flag,
+                                    error,
+                                })?;
+                            validated_stages |= flag;
+                        }
                     }
-                    None if state.write_mask.is_empty() => {}
-                    None => {
-                        log::warn!("Missing fragment output[{}], expected {:?}", i, state,);
-                        return Err(pipeline::CreateRenderPipelineError::ColorState(
-                            i as u8,
-                            pipeline::ColorStateError::Missing,
-                        ));
+
+                    Some(hal::pso::EntryPoint::<B> {
+                        entry: &entry_point_name,
+                        module: &shader_module.raw,
+                        specialization: hal::pso::Specialization::EMPTY,
+                    })
+                }
+                None => None,
+            };
+
+            if validated_stages.contains(wgt::ShaderStage::FRAGMENT) {
+                for (i, state) in color_states.iter().enumerate() {
+                    match io.get(&(i as wgt::ShaderLocation)) {
+                        Some(ref output) => {
+                            validation::check_texture_format(state.format, &output.ty).map_err(
+                                |pipeline| {
+                                    pipeline::CreateRenderPipelineError::ColorState(
+                                        i as u8,
+                                        pipeline::ColorStateError::IncompatibleFormat {
+                                            pipeline,
+                                            shader: output.ty,
+                                        },
+                                    )
+                                },
+                            )?;
+                        }
+                        None if state.write_mask.is_empty() => {}
+                        None => {
+                            log::warn!("Missing fragment output[{}], expected {:?}", i, state,);
+                            return Err(pipeline::CreateRenderPipelineError::ColorState(
+                                i as u8,
+                                pipeline::ColorStateError::Missing,
+                            ));
+                        }
                     }
                 }
             }
-        }
-        let last_stage = match desc.fragment {
-            Some(_) => wgt::ShaderStage::FRAGMENT,
-            None => wgt::ShaderStage::VERTEX,
+
+            let last_stage = match desc.fragment {
+                Some(_) => wgt::ShaderStage::FRAGMENT,
+                None => wgt::ShaderStage::VERTEX,
+            };
+            if desc.layout.is_none() && !validated_stages.contains(last_stage) {
+                return Err(pipeline::ImplicitLayoutError::ReflectionError(last_stage).into());
+            }
+
+            let pipeline_layout_id = match desc.layout {
+                Some(id) => id,
+                None => self.derive_pipeline_layout(
+                    self_id,
+                    implicit_context,
+                    derived_group_layouts,
+                    &mut *bgl_guard,
+                    &mut *pipeline_layout_guard,
+                )?,
+            };
+
+            (
+                pipeline_layout_id,
+                vertex_buffers,
+                attributes,
+                input_assembler,
+                vertex,
+                rp_key,
+                rasterizer,
+                fragment,
+                blender,
+                depth_stencil,
+                multisampling,
+                baked_states,
+                color_states,
+                depth_stencil_state,
+                samples,
+                vertex_strides,
+            )
         };
-        if desc.layout.is_none() && !validated_stages.contains(last_stage) {
-            return Err(pipeline::ImplicitLayoutError::ReflectionError(last_stage).into());
-        }
+
+        let (pipeline_layout_guard, _) = hub.pipeline_layouts.read(&mut token);
 
         let primitive_assembler = hal::pso::PrimitiveAssemblerDesc::Vertex {
             buffers: &vertex_buffers,
@@ -2526,16 +2582,6 @@ impl<B: GfxBackend> Device<B> {
         // TODO
         let parent = hal::pso::BasePipeline::None;
 
-        let pipeline_layout_id = match desc.layout {
-            Some(id) => id,
-            None => self.derive_pipeline_layout(
-                self_id,
-                implicit_context,
-                derived_group_layouts,
-                &mut *bgl_guard,
-                &mut *pipeline_layout_guard,
-            )?,
-        };
         let layout = pipeline_layout_guard
             .get(pipeline_layout_id)
             .map_err(|_| pipeline::CreateRenderPipelineError::InvalidLayout)?;
