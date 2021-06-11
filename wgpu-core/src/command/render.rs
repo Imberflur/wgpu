@@ -29,6 +29,7 @@ use crate::{
 
 use arrayvec::ArrayVec;
 use hal::{command::CommandBuffer as _, device::Device as _};
+use parking_lot::RwLockWriteGuard;
 use thiserror::Error;
 use wgt::{
     BufferAddress, BufferSize, BufferUsage, Color, IndexFormat, InputStepMode, TextureUsage,
@@ -768,71 +769,6 @@ impl<'a, B: GfxBackend> RenderPassInfo<'a, B> {
             return Err(RenderPassErrorInner::InvalidSampleCount(sample_count));
         }
 
-        let RenderPassLock {
-            ref mut render_passes,
-            ref mut framebuffers,
-        } = *device.render_passes.lock();
-        let render_pass = match render_passes.entry(rp_key.clone()) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(entry) => {
-                let color_ids: [hal::pass::AttachmentRef; MAX_COLOR_TARGETS] = [
-                    (0, hal::image::Layout::ColorAttachmentOptimal),
-                    (1, hal::image::Layout::ColorAttachmentOptimal),
-                    (2, hal::image::Layout::ColorAttachmentOptimal),
-                    (3, hal::image::Layout::ColorAttachmentOptimal),
-                ];
-
-                let mut resolve_ids = ArrayVec::<[_; MAX_COLOR_TARGETS]>::new();
-                let mut attachment_index = color_attachments.len();
-                if color_attachments
-                    .iter()
-                    .any(|at| at.resolve_target.is_some())
-                {
-                    for ((i, at), &(_, layout)) in color_attachments
-                        .iter()
-                        .enumerate()
-                        .zip(entry.key().resolves.iter())
-                    {
-                        let real_attachment_index = match at.resolve_target {
-                            Some(_) => attachment_index + i,
-                            None => hal::pass::ATTACHMENT_UNUSED,
-                        };
-                        resolve_ids.push((real_attachment_index, layout));
-                    }
-                    attachment_index += color_attachments.len();
-                }
-
-                let depth_id = depth_stencil_attachment.map(|_| {
-                    let usage = if is_ds_read_only {
-                        TextureUse::ATTACHMENT_READ
-                    } else {
-                        TextureUse::ATTACHMENT_WRITE
-                    };
-                    (
-                        attachment_index,
-                        conv::map_texture_state(usage, depth_stencil_aspects).1,
-                    )
-                });
-
-                let subpass = hal::pass::SubpassDesc {
-                    colors: &color_ids[..color_attachments.len()],
-                    resolves: &resolve_ids,
-                    depth_stencil: depth_id.as_ref(),
-                    inputs: &[],
-                    preserves: &[],
-                };
-                let all = entry.key().all().map(|&(ref at, _)| at.clone());
-
-                let pass = unsafe {
-                    device
-                        .raw
-                        .create_render_pass(all, iter::once(subpass), iter::empty())
-                }
-                .unwrap();
-                entry.insert(pass)
-            }
-        };
-
         let view_data = AttachmentData {
             colors: color_attachments
                 .iter()
@@ -851,15 +787,90 @@ impl<'a, B: GfxBackend> RenderPassInfo<'a, B> {
             extent,
             samples: sample_count,
         };
-        let context = RenderPassContext {
-            attachments: view_data.map(|view| view.format),
-            sample_count,
-        };
 
-        // Cache framebuffers by the device.
-        let framebuffer = match framebuffers.entry(fb_key) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => {
+        // Get cached render_pass and framebuffer creating them if they don't already exist.
+        // Avoids taking a write lock if new entries don't need to be created.
+        let rp_lock = device.render_passes.read();
+        let rp_lock_two; // Used to keep the lock alive in case where we need to take a write lock
+        let (render_pass, framebuffer) = if let Some(tuple) = rp_lock
+            .render_passes
+            .get(&rp_key)
+            .and_then(|rp| rp_lock.framebuffers.get(&fb_key).map(|fb| (rp, fb)))
+        {
+            tuple
+        } else {
+            // We need to take a write lock to insert missing render pass and/or framebuffer
+            drop(rp_lock);
+
+            let mut rp_lock = device.render_passes.write();
+            let RenderPassLock {
+                ref mut render_passes,
+                ref mut framebuffers,
+            } = *rp_lock;
+
+            let render_pass = match render_passes.entry(rp_key.clone()) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(entry) => {
+                    let color_ids: [hal::pass::AttachmentRef; MAX_COLOR_TARGETS] = [
+                        (0, hal::image::Layout::ColorAttachmentOptimal),
+                        (1, hal::image::Layout::ColorAttachmentOptimal),
+                        (2, hal::image::Layout::ColorAttachmentOptimal),
+                        (3, hal::image::Layout::ColorAttachmentOptimal),
+                    ];
+
+                    let mut resolve_ids = ArrayVec::<[_; MAX_COLOR_TARGETS]>::new();
+                    let mut attachment_index = color_attachments.len();
+                    if color_attachments
+                        .iter()
+                        .any(|at| at.resolve_target.is_some())
+                    {
+                        for ((i, at), &(_, layout)) in color_attachments
+                            .iter()
+                            .enumerate()
+                            .zip(entry.key().resolves.iter())
+                        {
+                            let real_attachment_index = match at.resolve_target {
+                                Some(_) => attachment_index + i,
+                                None => hal::pass::ATTACHMENT_UNUSED,
+                            };
+                            resolve_ids.push((real_attachment_index, layout));
+                        }
+                        attachment_index += color_attachments.len();
+                    }
+
+                    let depth_id = depth_stencil_attachment.map(|_| {
+                        let usage = if is_ds_read_only {
+                            TextureUse::ATTACHMENT_READ
+                        } else {
+                            TextureUse::ATTACHMENT_WRITE
+                        };
+                        (
+                            attachment_index,
+                            conv::map_texture_state(usage, depth_stencil_aspects).1,
+                        )
+                    });
+
+                    let subpass = hal::pass::SubpassDesc {
+                        colors: &color_ids[..color_attachments.len()],
+                        depth_stencil: depth_id.as_ref(),
+                        inputs: &[],
+                        resolves: &resolve_ids,
+                        preserves: &[],
+                    };
+                    let all = entry.key().all().map(|&(ref at, _)| at.clone());
+
+                    let pass = unsafe {
+                        device
+                            .raw
+                            .create_render_pass(all, iter::once(subpass), iter::empty())
+                    }
+                    .unwrap();
+                    entry.insert(pass)
+                }
+            };
+
+            // Cache framebuffers by the device.
+            if let Entry::Vacant(e) = framebuffers.entry(fb_key.clone()) {
                 let fb = unsafe {
                     device
                         .raw
@@ -870,8 +881,27 @@ impl<'a, B: GfxBackend> RenderPassInfo<'a, B> {
                         )
                         .or(Err(RenderPassErrorInner::OutOfMemory))?
                 };
-                e.insert(fb)
+                e.insert(fb);
             }
+
+            // Downgrade to a read lock and get references
+            rp_lock_two = RwLockWriteGuard::downgrade(rp_lock);
+
+            (
+                rp_lock_two
+                    .render_passes
+                    .get(&rp_key)
+                    .expect("We just inserted this."),
+                rp_lock_two
+                    .framebuffers
+                    .get(&fb_key)
+                    .expect("We just inserted this."),
+            )
+        };
+
+        let context = RenderPassContext {
+            attachments: view_data.map(|view| view.format),
+            sample_count,
         };
 
         let rect = hal::pso::Rect {

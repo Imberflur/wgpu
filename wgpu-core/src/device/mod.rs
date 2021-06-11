@@ -24,19 +24,13 @@ use hal::{
     device::Device as _,
     window::{PresentationSurface as _, Surface as _},
 };
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use thiserror::Error;
 use wgt::{BufferAddress, InputStepMode, TextureDimension, TextureFormat, TextureViewDimension};
 
 use std::{
-    borrow::Cow,
-    collections::{hash_map::Entry, BTreeMap},
-    iter,
-    marker::PhantomData,
-    mem,
-    ops::Range,
-    ptr,
-    sync::atomic::Ordering,
+    borrow::Cow, collections::hash_map::Entry, collections::BTreeMap, iter, marker::PhantomData,
+    mem, ops::Range, ptr, sync::atomic::Ordering,
 };
 
 pub mod alloc;
@@ -115,7 +109,7 @@ impl<T> AttachmentData<T> {
 
 pub(crate) type AttachmentDataVec<T> = ArrayVec<[T; MAX_COLOR_TARGETS + MAX_COLOR_TARGETS + 1]>;
 pub(crate) type RenderPassKey = AttachmentData<(hal::pass::Attachment, hal::image::Layout)>;
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub(crate) struct FramebufferKey {
     pub(crate) attachments: AttachmentData<hal::image::FramebufferAttachment>,
     pub(crate) extent: wgt::Extent3d,
@@ -276,7 +270,7 @@ pub struct Device<B: hal::Backend> {
     pub(crate) active_submission_index: SubmissionIndex,
     /// Has to be locked temporarily only (locked last)
     pub(crate) trackers: Mutex<TrackerSet>,
-    pub(crate) render_passes: Mutex<RenderPassLock<B>>,
+    pub(crate) render_passes: RwLock<RenderPassLock<B>>,
     // Life tracker should be locked right after the device and before anything else.
     life_tracker: Mutex<life::LifetimeTracker<B>>,
     temp_suspected: life::SuspectedResources,
@@ -361,7 +355,7 @@ impl<B: GfxBackend> Device<B> {
             life_guard: LifeGuard::new("<device>"),
             active_submission_index: 0,
             trackers: Mutex::new(TrackerSet::new(B::VARIANT)),
-            render_passes: Mutex::new(RenderPassLock {
+            render_passes: RwLock::new(RenderPassLock {
                 render_passes: FastHashMap::default(),
                 framebuffers: FastHashMap::default(),
             }),
@@ -2546,7 +2540,33 @@ impl<B: GfxBackend> Device<B> {
             .get(pipeline_layout_id)
             .map_err(|_| pipeline::CreateRenderPipelineError::InvalidLayout)?;
 
-        let mut rp_lock = self.render_passes.lock();
+        let main_pass_lock = match RwLockReadGuard::try_map(self.render_passes.read(), |rp_lock| {
+            rp_lock.render_passes.get(&rp_key)
+        }) {
+            Ok(pass_lock) => pass_lock,
+            // Briefly take write lock to insert the missing render pass
+            Err(lock) => {
+                drop(lock);
+
+                let mut rp_lock = self.render_passes.write();
+                if let Entry::Vacant(e) = rp_lock.render_passes.entry(rp_key.clone()) {
+                    let pass = self
+                        .create_compatible_render_pass(&rp_key)
+                        .or(Err(DeviceError::OutOfMemory))?;
+                    e.insert(pass);
+                };
+
+                // Downgrade to a read lock and get render pass
+                let rp_lock = RwLockWriteGuard::downgrade(rp_lock);
+                RwLockReadGuard::map(rp_lock, |rp_lock| {
+                    rp_lock
+                        .render_passes
+                        .get(&rp_key)
+                        .expect("We just inserted this.")
+                })
+            }
+        };
+
         let pipeline_desc = hal::pso::GraphicsPipelineDesc {
             label: desc.label.as_ref().map(AsRef::as_ref),
             primitive_assembler,
@@ -2559,15 +2579,7 @@ impl<B: GfxBackend> Device<B> {
             layout: &layout.raw,
             subpass: hal::pass::Subpass {
                 index: 0,
-                main_pass: match rp_lock.render_passes.entry(rp_key) {
-                    Entry::Occupied(e) => e.into_mut(),
-                    Entry::Vacant(e) => {
-                        let pass = self
-                            .create_compatible_render_pass(e.key())
-                            .or(Err(DeviceError::OutOfMemory))?;
-                        e.insert(pass)
-                    }
-                },
+                main_pass: &*main_pass_lock,
             },
             flags,
             parent,
