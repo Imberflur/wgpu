@@ -10,6 +10,8 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
 };
 
+use winit::keyboard::Key;
+
 #[allow(dead_code)]
 pub fn cast_slice<T>(data: &[T]) -> &[u8] {
     use std::{mem::size_of_val, slice::from_raw_parts};
@@ -326,9 +328,9 @@ fn start<E: Example>(
             }
             event::Event::WindowEvent { event, .. } => match event {
                 WindowEvent::KeyboardInput {
-                    input:
-                        event::KeyboardInput {
-                            virtual_keycode: Some(event::VirtualKeyCode::Escape),
+                    event:
+                        event::KeyEvent {
+                            logical_key: Key::Escape,
                             state: event::ElementState::Pressed,
                             ..
                         },
@@ -339,14 +341,14 @@ fn start<E: Example>(
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 WindowEvent::KeyboardInput {
-                    input:
-                        event::KeyboardInput {
-                            virtual_keycode: Some(event::VirtualKeyCode::R),
+                    event:
+                        event::KeyEvent {
+                            logical_key: Key::Character(c),
                             state: event::ElementState::Pressed,
                             ..
                         },
                     ..
-                } => {
+                } if matches!(c.as_str(), "R" | "r") => {
                     println!("{:#?}", instance.generate_report());
                 }
                 _ => {
@@ -567,16 +569,17 @@ pub fn test<E: Example>(mut params: FrameworkRefTest) {
 
             example.render(&dst_view, &ctx.device, &ctx.queue, &spawner);
 
+            // TODO: do something other than creating winit key event
+            /*
             // Handle specific case for bunnymark
             #[allow(deprecated)]
             if params.image_path == "/examples/bunnymark/screenshot.png" {
                 // Press spacebar to spawn bunnies
                 example.update(winit::event::WindowEvent::KeyboardInput {
-                    input: winit::event::KeyboardInput {
-                        scancode: 0,
+                    event: winit::event::KeyEvent {
                         state: winit::event::ElementState::Pressed,
-                        virtual_keycode: Some(winit::event::VirtualKeyCode::Space),
-                        modifiers: winit::event::ModifiersState::empty(),
+                        logical_key: Key::Space,
+                        ..
                     },
                     device_id: unsafe { winit::event::DeviceId::dummy() },
                     is_synthetic: false,
@@ -587,6 +590,7 @@ pub fn test<E: Example>(mut params: FrameworkRefTest) {
                     example.render(&dst_view, &ctx.device, &ctx.queue, &spawner);
                 }
             }
+            */
 
             let mut cmd_buf = ctx
                 .device
