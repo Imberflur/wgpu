@@ -711,6 +711,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 inst.expect(base_words + 2)?;
                 dec.desc_index = Some(self.next()?);
             }
+            spirv::Decoration::Block => {}
             spirv::Decoration::BufferBlock => {
                 dec.storage_buffer = true;
             }
