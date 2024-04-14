@@ -604,6 +604,7 @@ fn write_output(
                         "Generating hlsl output requires validation to \
                          succeed, and it failed in a previous step",
                     ))?,
+                    None,
                 )
                 .unwrap_pretty();
             fs::write(output_path, buffer)?;
