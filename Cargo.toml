@@ -17,7 +17,7 @@ members = [
     "wgpu-types",
     "wgpu",
 ]
-exclude = []
+exclude = ["examples/src"]
 default-members = [
     "examples/*",
     "naga",
