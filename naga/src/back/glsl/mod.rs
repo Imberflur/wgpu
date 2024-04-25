@@ -1985,6 +1985,12 @@ impl<'a, W: Write> Writer<'a, W> {
                 selector,
                 ref cases,
             } => {
+                // TODO: Do this
+                // Some glsl consumers may not handle switches with a single body correctly.
+                // So write this as a `do {} while(false);` loop instead.
+                // This is the same fix as for FXC in hlsl, although here it wasn't specifically
+                // tested against any problematic consumers.
+
                 // Start the switch
                 write!(self.out, "{level}")?;
                 write!(self.out, "switch(")?;

@@ -1,10 +1,8 @@
 void switch_default_break(int i)
 {
-    switch(i) {
-        default: {
-            break;
-        }
-    }
+    do {
+        break;
+    } while(false);
 }
 
 void switch_case_break()
@@ -42,12 +40,9 @@ void main(uint3 global_id : SV_DispatchThreadID)
 
     DeviceMemoryBarrierWithGroupSync();
     GroupMemoryBarrierWithGroupSync();
-    switch(1) {
-        default: {
-            pos = 1;
-            break;
-        }
-    }
+    do {
+        pos = 1;
+    } while(false);
     int _expr4 = pos;
     switch(_expr4) {
         case 1: {
