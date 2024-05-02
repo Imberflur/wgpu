@@ -40,6 +40,41 @@ void loop_switch_continue(int x) {
     return;
 }
 
+void loop_switch_continue_nesting(int x_1, int y, int z) {
+    while(true) {
+        switch(x_1) {
+            case 1: {
+                continue;
+            }
+            case 2: {
+                switch(y) {
+                    case 1: {
+                        continue;
+                    }
+                    default: {
+                        while(true) {
+                            switch(z) {
+                                case 1: {
+                                    continue;
+                                }
+                                default: {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+    }
+    return;
+}
+
 void main() {
     uvec3 global_id = gl_GlobalInvocationID;
     int pos = 0;

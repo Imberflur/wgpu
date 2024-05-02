@@ -16,9 +16,14 @@ pub mod spv;
 #[cfg(feature = "wgsl-out")]
 pub mod wgsl;
 
+#[cfg(any(feature = "hlsl-out", feature = "glsl-out"))]
+mod continue_forward;
+
 const COMPONENTS: &[char] = &['x', 'y', 'z', 'w'];
 const INDENT: &str = "    ";
 const BAKE_PREFIX: &str = "_e";
+/// Prefix used for `continue` forwarding variables.
+pub const CONTINUE_PREFIX: &str = "_continue";
 
 type NeedBakeExpressions = crate::FastHashSet<crate::Handle<crate::Expression>>;
 

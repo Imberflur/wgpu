@@ -59,7 +59,6 @@ pub(super) struct WrappedMatCx2 {
     pub(super) columns: crate::VectorSize,
 }
 
-
 #[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct WrappedZeroValue {
     pub(super) ty: Handle<crate::Type>,

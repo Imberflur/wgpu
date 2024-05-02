@@ -88,3 +88,31 @@ fn loop_switch_continue(x: i32) {
         }
     }
 }
+
+fn loop_switch_continue_nesting(x: i32, y: i32, z: i32) {
+    loop {
+        switch x {
+            case 1: {
+                continue;
+            }
+            case 2: {
+                switch y {
+                    case 1: {
+                        continue;
+                    }
+                    default: {
+                        loop {
+                            switch z {
+                                case 1: {
+                                    continue;
+                                }
+                                default: {}
+                            }
+                        }
+                    }
+                }
+            }
+            default: {}
+        }
+    }
+}

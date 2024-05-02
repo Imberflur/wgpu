@@ -557,7 +557,9 @@ fn write_output_hlsl(
 
     let mut buffer = String::new();
     let mut writer = hlsl::Writer::new(&mut buffer, options);
-    let reflection_info = writer.write(module, info, frag_ep.as_ref()).expect("HLSL write failed");
+    let reflection_info = writer
+        .write(module, info, frag_ep.as_ref())
+        .expect("HLSL write failed");
 
     input.write_output_file("hlsl", "hlsl", buffer);
 

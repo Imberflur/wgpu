@@ -30,6 +30,37 @@ fn loop_switch_continue(x: i32) {
     return;
 }
 
+fn loop_switch_continue_nesting(x_1: i32, y: i32, z: i32) {
+    loop {
+        switch x_1 {
+            case 1: {
+                continue;
+            }
+            case 2: {
+                switch y {
+                    case 1: {
+                        continue;
+                    }
+                    default: {
+                        loop {
+                            switch z {
+                                case 1: {
+                                    continue;
+                                }
+                                default: {
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            default: {
+            }
+        }
+    }
+    return;
+}
+
 @compute @workgroup_size(1, 1, 1) 
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var pos: i32;

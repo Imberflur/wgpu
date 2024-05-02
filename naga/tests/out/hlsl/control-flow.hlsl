@@ -21,13 +21,68 @@ void switch_case_break()
 void loop_switch_continue(int x)
 {
     while(true) {
+        bool _continue0 = false;
         switch(x) {
             case 1: {
-                continue;
+                _continue0 = true;
+                break;
             }
             default: {
                 break;
             }
+        }
+        if (_continue0) {
+            continue;
+        }
+    }
+    return;
+}
+
+void loop_switch_continue_nesting(int x_1, int y, int z)
+{
+    while(true) {
+        bool _continue1 = false;
+        switch(x_1) {
+            case 1: {
+                _continue1 = true;
+                break;
+            }
+            case 2: {
+                switch(y) {
+                    case 1: {
+                        _continue1 = true;
+                        break;
+                    }
+                    default: {
+                        while(true) {
+                            bool _continue2 = false;
+                            switch(z) {
+                                case 1: {
+                                    _continue2 = true;
+                                    break;
+                                }
+                                default: {
+                                    break;
+                                }
+                            }
+                            if (_continue2) {
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (_continue1) {
+                    break;
+                }
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+        if (_continue1) {
+            continue;
         }
     }
     return;

@@ -216,9 +216,10 @@ impl super::Device {
 
         let frag_ep = fragment_stage
             .map(|fs_stage| {
-                hlsl::FragmentEntryPoint::new(&fs_stage.module.naga.module, fs_stage.entry_point).ok_or(
-                    crate::PipelineError::EntryPoint(naga::ShaderStage::Fragment),
-                )
+                hlsl::FragmentEntryPoint::new(&fs_stage.module.naga.module, fs_stage.entry_point)
+                    .ok_or(crate::PipelineError::EntryPoint(
+                        naga::ShaderStage::Fragment,
+                    ))
             })
             .transpose()?;
 
@@ -1464,7 +1465,8 @@ impl crate::Device<super::Api> for super::Device {
         &self,
         desc: &crate::ComputePipelineDescriptor<super::Api>,
     ) -> Result<super::ComputePipeline, crate::PipelineError> {
-        let blob_cs = self.load_shader(&desc.stage, desc.layout, naga::ShaderStage::Compute, None)?;
+        let blob_cs =
+            self.load_shader(&desc.stage, desc.layout, naga::ShaderStage::Compute, None)?;
 
         let pair = {
             profiling::scope!("ID3D12Device::CreateComputePipelineState");

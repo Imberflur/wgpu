@@ -44,6 +44,45 @@ void loop_switch_continue(
     return;
 }
 
+void loop_switch_continue_nesting(
+    int x_1,
+    int y,
+    int z
+) {
+    while(true) {
+        switch(x_1) {
+            case 1: {
+                continue;
+            }
+            case 2: {
+                switch(y) {
+                    case 1: {
+                        continue;
+                    }
+                    default: {
+                        while(true) {
+                            switch(z) {
+                                case 1: {
+                                    continue;
+                                }
+                                default: {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+    }
+    return;
+}
+
 struct main_Input {
 };
 kernel void main_(

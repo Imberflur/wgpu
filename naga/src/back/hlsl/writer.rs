@@ -89,6 +89,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             entry_point_io: Vec::new(),
             named_expressions: crate::NamedExpressions::default(),
             wrapped: super::Wrapped::default(),
+            continue_ctx: back::continue_forward::ContinueCtx::default(),
             temp_access_chain: Vec::new(),
             need_bake_expressions: Default::default(),
         }
@@ -107,6 +108,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         self.entry_point_io.clear();
         self.named_expressions.clear();
         self.wrapped.clear();
+        self.continue_ctx.clear();
         self.need_bake_expressions.clear();
     }
 
@@ -1379,6 +1381,15 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         let indent_level_1 = level.next();
         let indent_level_2 = indent_level_1.next();
 
+        // See docs of `back::continue_forward` module.
+        if let Some(variable_id) = self.continue_ctx.enter_switch() {
+            writeln!(
+                self.out,
+                "{level}bool {}{variable_id} = false;",
+                back::CONTINUE_PREFIX,
+            )?;
+        };
+
         // Check if there is only one body. FXC doesn't handle these switches correctly, so
         // we generate a `do {} while(false);` loop instead.
         let one_body = cases
@@ -1387,7 +1398,6 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             .skip(1)
             .all(|case| case.fall_through && case.body.is_empty());
         if one_body {
-            // TODO: handle continue statements which would apply to outer loop
             // Start the do-while
             writeln!(self.out, "{level}do {{")?;
             // Note: Expressions have no side-effects so we don't need to emit selector expression.
@@ -1486,6 +1496,18 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 }
             }
 
+            writeln!(self.out, "{level}}}")?;
+        }
+
+        use back::continue_forward::ExitSwitchOp;
+        let op = match self.continue_ctx.exit_switch() {
+            ExitSwitchOp::None => None,
+            ExitSwitchOp::Continue { variable_id } => Some(("continue", variable_id)),
+            ExitSwitchOp::Break { variable_id } => Some(("break", variable_id)),
+        };
+        if let Some((control_flow, id)) = op {
+            writeln!(self.out, "{level}if ({}{id}) {{", back::CONTINUE_PREFIX)?;
+            writeln!(self.out, "{indent_level_1}{control_flow};")?;
             writeln!(self.out, "{level}}}")?;
         }
 
@@ -1935,6 +1957,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 ref continuing,
                 break_if,
             } => {
+                self.continue_ctx.enter_loop();
                 let l2 = level.next();
                 if !continuing.is_empty() || break_if.is_some() {
                     let gate_name = self.namer.call("loop_init");
@@ -1961,10 +1984,22 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 for sta in body.iter() {
                     self.write_stmt(module, sta, func_ctx, l2)?;
                 }
-                writeln!(self.out, "{level}}}")?
+                writeln!(self.out, "{level}}}")?;
+                self.continue_ctx.exit_loop();
             }
             Statement::Break => writeln!(self.out, "{level}break;")?,
-            Statement::Continue => writeln!(self.out, "{level}continue;")?,
+            Statement::Continue => {
+                if let Some(variable_id) = self.continue_ctx.needs_forwarding() {
+                    writeln!(
+                        self.out,
+                        "{level}{}{variable_id} = true;",
+                        back::CONTINUE_PREFIX
+                    )?;
+                    writeln!(self.out, "{level}break;")?
+                } else {
+                    writeln!(self.out, "{level}continue;")?
+                }
+            }
             Statement::Barrier(barrier) => {
                 self.write_barrier(barrier, level)?;
             }
