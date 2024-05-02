@@ -114,5 +114,28 @@ fn loop_switch_continue_nesting(x: i32, y: i32, z: i32) {
             }
             default: {}
         }
+
+
+        // Degenerate switch with continue
+        switch y {
+            default: {
+                continue;
+            }
+        }
+    }
+
+    // In separate loop to avoid spv validation error:
+    // See https://github.com/gfx-rs/wgpu/issues/5658
+    loop {
+        // Nested degenerate switch with continue
+        switch y {
+            case 1, default: {
+                switch z {
+                    default: {
+                        continue;
+                    }
+                }
+            }
+        }
     }
 }

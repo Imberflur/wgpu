@@ -84,6 +84,29 @@ void loop_switch_continue_nesting(int x_1, int y, int z)
         if (_continue1) {
             continue;
         }
+        bool _continue3 = false;
+        do {
+            _continue3 = true;
+            break;
+        } while(false);
+        if (_continue3) {
+            continue;
+        }
+    }
+    while(true) {
+        bool _continue4 = false;
+        do {
+            do {
+                _continue4 = true;
+                break;
+            } while(false);
+            if (_continue4) {
+                break;
+            }
+        } while(false);
+        if (_continue4) {
+            continue;
+        }
     }
     return;
 }

@@ -479,6 +479,11 @@ pub struct Writer<'a, W> {
     named_expressions: crate::NamedExpressions,
     /// Set of expressions that need to be baked to avoid unnecessary repetition in output
     need_bake_expressions: back::NeedBakeExpressions,
+    /// Information about nesting of loops and switches.
+    ///
+    /// Used for forwarding continue statements in switches that have been
+    /// transformed to `do {} while(false);` loops.
+    continue_ctx: back::continue_forward::ContinueCtx,
     /// How many views to render to, if doing multiview rendering.
     multiview: Option<std::num::NonZeroU32>,
     /// Mapping of varying variables to their location. Needed for reflections.
@@ -545,6 +550,7 @@ impl<'a, W: Write> Writer<'a, W> {
             block_id: IdGenerator::default(),
             named_expressions: Default::default(),
             need_bake_expressions: Default::default(),
+            continue_ctx: back::continue_forward::ContinueCtx::default(),
             varying: Default::default(),
         };
 
@@ -1985,48 +1991,96 @@ impl<'a, W: Write> Writer<'a, W> {
                 selector,
                 ref cases,
             } => {
-                // TODO: Do this
+                let l2 = level.next();
                 // Some glsl consumers may not handle switches with a single body correctly.
                 // So write this as a `do {} while(false);` loop instead.
-                // This is the same fix as for FXC in hlsl, although here it wasn't specifically
-                // tested against any problematic consumers.
+                // This is the same fix as for FXC in hlsl, although here it
+                // wasn't specifically tested against any problematic consumers.
+                // See https://github.com/gfx-rs/wgpu/issues/4514
+                let one_body = cases
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .all(|case| case.fall_through && case.body.is_empty());
+                if one_body {
+                    // See docs of `back::continue_forward` module. For glsl
+                    // we only need to handle switches transformed into loops.
+                    if let Some(variable_id) = self.continue_ctx.enter_switch() {
+                        writeln!(
+                            self.out,
+                            "{level}bool {}{variable_id} = false;",
+                            back::CONTINUE_PREFIX,
+                        )?;
+                    };
+                    writeln!(self.out, "{level}do {{")?;
+                    // Note: Expressions have no side-effects so we don't need to emit selector expression.
 
-                // Start the switch
-                write!(self.out, "{level}")?;
-                write!(self.out, "switch(")?;
-                self.write_expr(selector, ctx)?;
-                writeln!(self.out, ") {{")?;
+                    // Body
+                    if let Some(case) = cases.last() {
+                        for sta in case.body.iter() {
+                            self.write_stmt(sta, ctx, l2)?;
+                        }
+                    }
+                    // End do-while
+                    writeln!(self.out, "{level}}} while(false);")?;
 
-                // Write all cases
-                let l2 = level.next();
-                for case in cases {
-                    match case.value {
-                        crate::SwitchValue::I32(value) => write!(self.out, "{l2}case {value}:")?,
-                        crate::SwitchValue::U32(value) => write!(self.out, "{l2}case {value}u:")?,
-                        crate::SwitchValue::Default => write!(self.out, "{l2}default:")?,
+                    // Handle any forwarded continue statements.
+                    use back::continue_forward::ExitControlFlow;
+                    let op = match self.continue_ctx.exit_switch() {
+                        ExitControlFlow::None => None,
+                        ExitControlFlow::Continue { variable_id } => {
+                            Some(("continue", variable_id))
+                        }
+                        ExitControlFlow::Break { variable_id } => Some(("break", variable_id)),
+                    };
+                    if let Some((control_flow, id)) = op {
+                        writeln!(self.out, "{level}if ({}{id}) {{", back::CONTINUE_PREFIX)?;
+                        writeln!(self.out, "{l2}{control_flow};")?;
+                        writeln!(self.out, "{level}}}")?;
+                    }
+                } else {
+                    // Start the switch
+                    write!(self.out, "{level}")?;
+                    write!(self.out, "switch(")?;
+                    self.write_expr(selector, ctx)?;
+                    writeln!(self.out, ") {{")?;
+
+                    // Write all cases
+                    for case in cases {
+                        match case.value {
+                            crate::SwitchValue::I32(value) => {
+                                write!(self.out, "{l2}case {value}:")?
+                            }
+                            crate::SwitchValue::U32(value) => {
+                                write!(self.out, "{l2}case {value}u:")?
+                            }
+                            crate::SwitchValue::Default => write!(self.out, "{l2}default:")?,
+                        }
+
+                        let write_block_braces = !(case.fall_through && case.body.is_empty());
+                        if write_block_braces {
+                            writeln!(self.out, " {{")?;
+                        } else {
+                            writeln!(self.out)?;
+                        }
+
+                        for sta in case.body.iter() {
+                            self.write_stmt(sta, ctx, l2.next())?;
+                        }
+
+                        if !case.fall_through
+                            && case.body.last().map_or(true, |s| !s.is_terminator())
+                        {
+                            writeln!(self.out, "{}break;", l2.next())?;
+                        }
+
+                        if write_block_braces {
+                            writeln!(self.out, "{l2}}}")?;
+                        }
                     }
 
-                    let write_block_braces = !(case.fall_through && case.body.is_empty());
-                    if write_block_braces {
-                        writeln!(self.out, " {{")?;
-                    } else {
-                        writeln!(self.out)?;
-                    }
-
-                    for sta in case.body.iter() {
-                        self.write_stmt(sta, ctx, l2.next())?;
-                    }
-
-                    if !case.fall_through && case.body.last().map_or(true, |s| !s.is_terminator()) {
-                        writeln!(self.out, "{}break;", l2.next())?;
-                    }
-
-                    if write_block_braces {
-                        writeln!(self.out, "{l2}}}")?;
-                    }
+                    writeln!(self.out, "{level}}}")?
                 }
-
-                writeln!(self.out, "{level}}}")?
             }
             // Loops in naga IR are based on wgsl loops, glsl can emulate the behaviour by using a
             // while true loop and appending the continuing block to the body resulting on:
@@ -2043,6 +2097,7 @@ impl<'a, W: Write> Writer<'a, W> {
                 ref continuing,
                 break_if,
             } => {
+                self.continue_ctx.enter_loop();
                 if !continuing.is_empty() || break_if.is_some() {
                     let gate_name = self.namer.call("loop_init");
                     writeln!(self.out, "{level}bool {gate_name} = true;")?;
@@ -2068,7 +2123,8 @@ impl<'a, W: Write> Writer<'a, W> {
                 for sta in body {
                     self.write_stmt(sta, ctx, level.next())?;
                 }
-                writeln!(self.out, "{level}}}")?
+                writeln!(self.out, "{level}}}")?;
+                self.continue_ctx.exit_loop();
             }
             // Break, continue and return as written as in C
             // `break;`
@@ -2078,8 +2134,16 @@ impl<'a, W: Write> Writer<'a, W> {
             }
             // `continue;`
             Statement::Continue => {
-                write!(self.out, "{level}")?;
-                writeln!(self.out, "continue;")?
+                if let Some(variable_id) = self.continue_ctx.needs_forwarding() {
+                    writeln!(
+                        self.out,
+                        "{level}{}{variable_id} = true;",
+                        back::CONTINUE_PREFIX
+                    )?;
+                    writeln!(self.out, "{level}break;")?
+                } else {
+                    writeln!(self.out, "{level}continue;")?
+                }
             }
             // `return expr;`, `expr` is optional
             Statement::Return { value } => {

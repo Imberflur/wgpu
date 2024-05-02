@@ -79,6 +79,24 @@ void loop_switch_continue_nesting(
                 break;
             }
         }
+        switch(y) {
+            default: {
+                continue;
+            }
+        }
+    }
+    while(true) {
+        switch(y) {
+            case 1:
+            default: {
+                switch(z) {
+                    default: {
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
     }
     return;
 }

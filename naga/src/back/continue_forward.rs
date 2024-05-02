@@ -18,9 +18,10 @@ enum Nesting {
     /// * When entering an inner loop, increment the depth.
     /// * When exiting the loop, decrement the depth (and pop if it reaches 0).
     Loop { depth: u32 },
-    /// Currently nested in at least one switch.
+    /// Currently nested in at least one switch that needs to forward continues.
     ///
-    /// (including ones transformed into `do {} while(false)` loops).
+    /// This includes switches transformed into `do {} while(false)` loops, but doesn't need to
+    /// include regular switches in backends that can support `continue` within switches.
     ///
     /// `continue` should be forwarded to surrounding loop.
     ///
@@ -30,7 +31,7 @@ enum Nesting {
     Switch { depth: u32, variable_id: u32 },
 }
 
-pub(crate) enum ExitSwitchOp {
+pub(crate) enum ExitControlFlow {
     None,
     /// Emit `if (continue_variable) { continue; }`
     Continue {
@@ -124,12 +125,12 @@ impl ContinueCtx {
 
     /// Updates internal state and returns whether this switch needs to be followed by a statement
     /// to forward continues.
-    pub fn exit_switch(&mut self) -> ExitSwitchOp {
+    pub fn exit_switch(&mut self) -> ExitControlFlow {
         match self.stack.last_mut() {
-            None => ExitSwitchOp::None,
+            None => ExitControlFlow::None,
             Some(&mut Nesting::Loop { .. }) => {
                 log::error!("Unexpected loop state when exiting switch");
-                ExitSwitchOp::None
+                ExitControlFlow::None
             }
             Some(&mut Nesting::Switch {
                 ref mut depth,
@@ -138,9 +139,9 @@ impl ContinueCtx {
                 *depth -= 1;
                 if *depth == 0 {
                     self.stack.pop();
-                    ExitSwitchOp::Continue { variable_id }
+                    ExitControlFlow::Continue { variable_id }
                 } else {
-                    ExitSwitchOp::Break { variable_id }
+                    ExitControlFlow::Break { variable_id }
                 }
             }
         }

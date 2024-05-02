@@ -7,11 +7,9 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 
 void switch_default_break(int i) {
-    switch(i) {
-        default: {
-            break;
-        }
-    }
+    do {
+        break;
+    } while(false);
 }
 
 void switch_case_break() {
@@ -71,6 +69,29 @@ void loop_switch_continue_nesting(int x_1, int y, int z) {
                 break;
             }
         }
+        bool _continue0 = false;
+        do {
+            _continue0 = true;
+            break;
+        } while(false);
+        if (_continue0) {
+            continue;
+        }
+    }
+    while(true) {
+        bool _continue1 = false;
+        do {
+            do {
+                _continue1 = true;
+                break;
+            } while(false);
+            if (_continue1) {
+                break;
+            }
+        } while(false);
+        if (_continue1) {
+            continue;
+        }
     }
     return;
 }
@@ -82,12 +103,9 @@ void main() {
     barrier();
     memoryBarrierShared();
     barrier();
-    switch(1) {
-        default: {
-            pos = 1;
-            break;
-        }
-    }
+    do {
+        pos = 1;
+    } while(false);
     int _e4 = pos;
     switch(_e4) {
         case 1: {

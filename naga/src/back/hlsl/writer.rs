@@ -1499,11 +1499,12 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             writeln!(self.out, "{level}}}")?;
         }
 
-        use back::continue_forward::ExitSwitchOp;
+        // Handle any forwarded continue statements.
+        use back::continue_forward::ExitControlFlow;
         let op = match self.continue_ctx.exit_switch() {
-            ExitSwitchOp::None => None,
-            ExitSwitchOp::Continue { variable_id } => Some(("continue", variable_id)),
-            ExitSwitchOp::Break { variable_id } => Some(("break", variable_id)),
+            ExitControlFlow::None => None,
+            ExitControlFlow::Continue { variable_id } => Some(("continue", variable_id)),
+            ExitControlFlow::Break { variable_id } => Some(("break", variable_id)),
         };
         if let Some((control_flow, id)) = op {
             writeln!(self.out, "{level}if ({}{id}) {{", back::CONTINUE_PREFIX)?;

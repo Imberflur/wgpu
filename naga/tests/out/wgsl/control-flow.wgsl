@@ -57,6 +57,22 @@ fn loop_switch_continue_nesting(x_1: i32, y: i32, z: i32) {
             default: {
             }
         }
+        switch y {
+            default: {
+                continue;
+            }
+        }
+    }
+    loop {
+        switch y {
+            case 1, default: {
+                switch z {
+                    default: {
+                        continue;
+                    }
+                }
+            }
+        }
     }
     return;
 }
