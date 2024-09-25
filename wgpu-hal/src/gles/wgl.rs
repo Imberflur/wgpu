@@ -15,6 +15,7 @@ use std::{
     ptr,
     sync::Arc,
     time::Duration,
+    backtrace::Backtrace,
 };
 use wgt::InstanceFlags;
 use winapi::{
@@ -43,7 +44,7 @@ const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 1;
 /// A wrapper around a `[`glow::Context`]` and the required WGL context that uses locking to
 /// guarantee exclusive access when shared with multiple threads.
 pub struct AdapterContext {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<(Mutex<Inner>, Mutex<Option<Backtrace>>)>,
 }
 
 unsafe impl Sync for AdapterContext {}
@@ -55,19 +56,47 @@ impl AdapterContext {
     }
 
     pub fn raw_context(&self) -> *mut c_void {
-        self.inner.lock().context.context as *mut _
+        self.inner.0.lock().context.context as *mut _
     }
 
     /// Obtain a lock to the WGL context and get handle to the [`glow::Context`] that can be used to
     /// do rendering.
     #[track_caller]
     pub fn lock(&self) -> AdapterContextLock<'_> {
-        let inner = self
-            .inner
+        let inner = if let Some(guard) = self.inner.0
             // Don't lock forever. If it takes longer than 1 second to get the lock we've got a
             // deadlock and should panic to show where we got stuck
-            .try_lock_for(Duration::from_secs(CONTEXT_LOCK_TIMEOUT_SECS))
-            .expect("Could not lock adapter context. This is most-likely a deadlock.");
+            .try_lock_for(Duration::from_secs(CONTEXT_LOCK_TIMEOUT_SECS)) {
+            guard
+        } else {
+            log::warn!("Could not lock adapter context quickly. This may be a deadlock");
+            if let Some(backtrace) = self.inner.1.lock().take() {
+                log::warn!("Backtrace of last lock:\n{backtrace}");
+            }
+            let start = std::time::Instant::now();
+            let guard = self.inner.0.try_lock_for(Duration::from_secs(30)) 
+               .expect("Could not lock adapter context. This is most-likely a deadlock.");
+            log::warn!("Long wait for GL context lock: {:?}", start.elapsed() + Duration::from_secs(CONTEXT_LOCK_TIMEOUT_SECS));
+            guard
+        };
+        use std::sync::atomic::{AtomicU8, Ordering};
+        // TODO: put all this under cfg(debug_assertions)?
+        static LOCK_BACKTRACE: AtomicU8 = AtomicU8::new(0);
+        let backtrace_enabled = match LOCK_BACKTRACE.load(Ordering::Relaxed) {
+            0 => {
+                let enabled = match std::env::var("WGPU_GLES_LOCK_BACKTRACE") {
+                    Ok(s) => s != "0",
+                    Err(_) => false,
+                };
+                LOCK_BACKTRACE.store(enabled as u8 + 1, Ordering::Relaxed);
+                enabled
+            },
+            1 => false,
+            _ => true,
+        };
+        if backtrace_enabled {
+            *self.inner.1.lock() = Some(Backtrace::force_capture());
+        }
 
         inner.context.make_current(inner.device).unwrap();
 
@@ -140,7 +169,7 @@ struct Inner {
 
 pub struct Instance {
     srgb_capable: bool,
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<(Mutex<Inner>, Mutex<Option<Backtrace>>)>,
 }
 
 unsafe impl Send for Instance {}
@@ -418,11 +447,11 @@ impl crate::Instance<super::Api> for Instance {
         })?;
 
         Ok(Instance {
-            inner: Arc::new(Mutex::new(Inner {
+            inner: Arc::new((Mutex::new(Inner {
                 device: dc,
                 gl,
                 context,
-            })),
+            }), Mutex::new(None))),
             srgb_capable,
         })
     }
@@ -518,7 +547,7 @@ impl Surface {
             window: self.window,
         };
 
-        let inner = context.inner.lock();
+        let inner = context.inner.0.lock();
 
         if let Err(e) = inner.context.make_current(dc.device) {
             log::error!("unable to make the OpenGL context current for surface: {e}",);
@@ -614,7 +643,7 @@ impl crate::Surface<super::Api> for Surface {
         }
 
         let format_desc = device.shared.describe_texture_format(config.format);
-        let inner = &device.shared.context.inner.lock();
+        let inner = &device.shared.context.inner.0.lock();
 
         if let Err(e) = inner.context.make_current(dc.device) {
             log::error!("unable to make the OpenGL context current for surface: {e}",);
