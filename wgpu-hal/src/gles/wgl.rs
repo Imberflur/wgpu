@@ -38,7 +38,7 @@ use winapi::{
 };
 
 /// The amount of time to wait while trying to obtain a lock to the adapter context
-const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 1;
+const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 30;
 
 /// A wrapper around a `[`glow::Context`]` and the required WGL context that uses locking to
 /// guarantee exclusive access when shared with multiple threads.

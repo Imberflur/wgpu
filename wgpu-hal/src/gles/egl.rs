@@ -4,7 +4,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::{ffi, os::raw, ptr, rc::Rc, sync::Arc, time::Duration};
 
 /// The amount of time to wait while trying to obtain a lock to the adapter context
-const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 1;
+const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 30;
 
 const EGL_CONTEXT_FLAGS_KHR: i32 = 0x30FC;
 const EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR: i32 = 0x0001;
