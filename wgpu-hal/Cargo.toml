@@ -43,7 +43,7 @@ vulkan = [
     "libloading",
     "smallvec",
 ]
-gles = ["naga/glsl-out", "glow", "glutin_wgl_sys", "khronos-egl", "libloading"]
+gles = ["naga/glsl-out", "glow", "glutin_wgl_sys", "khronos-egl", "libloading", "bytemuck"]
 dx11 = [
     "naga/hlsl-out",
     "d3d12",
@@ -97,6 +97,7 @@ log = "0.4"
 
 # backend: Gles
 glow = { version = "0.13", optional = true }
+bytemuck = { version = "1.18.0", optional = true }
 
 [dependencies.wgt]
 package = "wgpu-types"
